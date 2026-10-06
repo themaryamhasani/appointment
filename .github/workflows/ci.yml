@@ -1,0 +1,99 @@
+name: CI
+
+on:
+  push:
+    branches: [main, master, develop]
+  pull_request:
+    branches: [main, master, develop]
+
+jobs:
+  quality:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: healthcare
+          POSTGRES_PASSWORD: healthcare
+          POSTGRES_DB: healthcare
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 9.15.9
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: pnpm
+
+      - name: Install
+        run: pnpm install
+
+      - name: Build packages
+        run: pnpm --filter @healthcare/types --filter @healthcare/validation --filter @healthcare/config build
+
+      - name: Generate Prisma
+        working-directory: apps/api
+        run: pnpm prisma generate
+        env:
+          DATABASE_URL: postgresql://healthcare:healthcare@localhost:5432/healthcare?schema=public
+
+      - name: Typecheck
+        run: pnpm typecheck
+
+      - name: Unit tests
+        run: pnpm --filter @healthcare/api test
+        env:
+          DATABASE_URL: postgresql://healthcare:healthcare@localhost:5432/healthcare?schema=public
+
+      - name: Migrate & Seed
+        working-directory: apps/api
+        run: |
+          pnpm prisma migrate deploy
+          pnpm prisma:seed
+        env:
+          DATABASE_URL: postgresql://healthcare:healthcare@localhost:5432/healthcare?schema=public
+          SEED_PASSWORD: Demo@123456
+
+      - name: Integration / concurrency tests
+        working-directory: apps/api
+        run: pnpm test:e2e
+        env:
+          DATABASE_URL: postgresql://healthcare:healthcare@localhost:5432/healthcare?schema=public
+
+      - name: Build API
+        run: pnpm --filter @healthcare/api build
+
+      - name: Build Web
+        run: pnpm --filter @healthcare/web build
+        env:
+          NEXT_PUBLIC_API_URL: http://localhost:4000/api/v1
+
+  docker:
+    runs-on: ubuntu-latest
+    needs: quality
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build API image
+        run: docker build -f docker/Dockerfile.api -t healthcare-api .
+      - name: Build Web image
+        run: docker build -f docker/Dockerfile.web -t healthcare-web --build-arg NEXT_PUBLIC_API_URL=http://localhost:4000/api/v1 .

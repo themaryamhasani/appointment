@@ -1,0 +1,97 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: healthcare
+      POSTGRES_PASSWORD: healthcare
+      POSTGRES_DB: healthcare
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U healthcare"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  api:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.api
+    ports:
+      - "4000:4000"
+    environment:
+      NODE_ENV: production
+      PORT: 4000
+      DATABASE_URL: postgresql://healthcare:healthcare@postgres:5432/healthcare?schema=public
+      REDIS_HOST: redis
+      REDIS_PORT: 6379
+      JWT_ACCESS_SECRET: docker-access-secret-change-in-production-32
+      JWT_REFRESH_SECRET: docker-refresh-secret-change-in-production-32
+      APP_URL: http://localhost:3000
+      API_PREFIX: api/v1
+      COOKIE_SECURE: "false"
+      SEED_PASSWORD: Demo@123456
+      PAYMENT_PROVIDER: mock
+      SMS_PROVIDER: mock
+      REDIS_FALLBACK: ""
+      PAYMENT_CALLBACK_URL: http://localhost:4000/api/v1/payments/callback
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:4000/api/v1/health/live"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  worker:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.api
+    command: ["node", "dist/worker.js"]
+    environment:
+      NODE_ENV: production
+      DATABASE_URL: postgresql://healthcare:healthcare@postgres:5432/healthcare?schema=public
+      REDIS_HOST: redis
+      REDIS_PORT: 6379
+      JWT_ACCESS_SECRET: docker-access-secret-change-in-production-32
+      JWT_REFRESH_SECRET: docker-refresh-secret-change-in-production-32
+      PAYMENT_PROVIDER: mock
+      SMS_PROVIDER: mock
+      SMTP_FROM: noreply@healthcare.local
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  web:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.web
+      args:
+        NEXT_PUBLIC_API_URL: http://localhost:4000/api/v1
+    ports:
+      - "3000:3000"
+    environment:
+      NEXT_PUBLIC_API_URL: http://localhost:4000/api/v1
+    depends_on:
+      api:
+        condition: service_healthy
+
+volumes:
+  postgres_data:
